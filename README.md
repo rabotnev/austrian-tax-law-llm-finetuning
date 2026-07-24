@@ -1,140 +1,174 @@
-# Project Report: LLM Evaluation on Austrian Law
+# Fine-Tuning vs. Zero-Shot LLMs for Austrian Tax Law
 
-## Models Used
+*Can a small fine-tuned model beat a much larger zero-shot one on domain-specific legal QA?*
 
-Two models are evaluated on 643 Austrian law questions from `dataset_clean.csv`. Both models receive the same prompts and produce German-language.
+This project compares two ways of answering **643 Austrian tax-law questions** in German: a large general-purpose model used **zero-shot** through an API, and a small model **fine-tuned with QLoRA** on a single free Colab GPU. Both are scored against human-written reference answers using ROUGE, BLEU, and BERTScore, followed by a detailed error analysis of *how* each model fails.
 
-### Model 1: Gemma 4 31B (API Inference, Zero-Shot)
+---
 
-This model accessed through Google AI Studio API, the model relies entirely on its pre-training knowledge and a system prompt that instructs it to act as an Austrian tax law expert.
+## TL;DR — Key Result
 
-- **Model ID:** `gemma-4-31b-it` (instruction-tuned variant)
-- **Parameters:** ~31 billion
-- **Sampling:** Temperature = 0.1 (low, for factual accuracy)
-- **System prompt:** "You are a highly qualified expert in Austrian tax law. Provide precise, professional answers. Always reference relevant paragraphs (e.g., EStG, KStG, BAO, UStG) where applicable. The answer must be in German and formatted as one continuous paragraph."
-- **Inference setup:** Sequential API calls with 5-second delay per request (free-tier rate limit), retry logic for 429/503 errors via `tenacity`.
-
-### Model 2: Gemma 4 E2B (QLoRA Fine-Tuned)
-
-This is a smaller model fine-tuned on domain-specific German law data using QLoRA (Quantized Low-Rank Adaptation). The base model is loaded in 4-bit precision, and only small LoRA adapter layers are trained while the rest of the model stays frozen.
-
-- **Model ID:** `google/gemma-4-E2B-it` (instruction-tuned variant)
-- **Total parameters:** 2.3B effective (5.1B with embeddings)
-- **Trainable parameters:** 4,644,864 (0.09% of total) — only the LoRA adapters
-- **Sampling:** Temperature = 0.1
-- **Fine-tuning data:** `DomainLLM/german-law-qa` from Hugging Face
-- **Inference setup:** Local GPU inference using Unsloth's optimized 2x faster inference mode.
-
-### Fine-Tuning Dataset
-- **Dataset:** `DomainLLM/german-law-qa` from Hugging Face
-- **Size:** 14,160 training examples of German law question-answer pairs
-- **Format:** Each example formatted into Gemma's chat template: `<bos><start_of_turn>user\n{question}<end_of_turn>\n<start_of_turn>model\n{answer}<end_of_turn><eos>`
-- **Domain:** General German law (not exclusively Austrian tax law)
-
-### Fine-Tuning Method: QLoRA
-QLoRA combines quantization with Low-Rank Adaptation to enable fine-tuning large models on limited hardware (Google Colab T4 GPU with 16 GB VRAM):
-
-1. **Quantization:** Base model loaded in 4-bit precision (reduces memory from ~20 GB to ~5 GB)
-2. **Freezing:** All base model weights are frozen (not updated during training)
-3. **LoRA adapters:** Small 16-bit adapter matrices injected into attention layers, only these are trained
-
-### Hyper-Parameters
-
-| Parameter | Value |
-|---|---|
-| LoRA rank (r) | 8 |
-| LoRA alpha | 8 |
-| LoRA dropout | 0 (optimized by Unsloth) |
-| Target modules | q_proj, k_proj, v_proj, o_proj |
-| Batch size (per device) | 1 |
-| Gradient accumulation steps | 8 |
-| Effective batch size | 8 |
-| Training steps | 150 |
-| Learning rate | 2e-4 |
-| Warmup steps | 5 |
-| LR scheduler | Linear |
-| Optimizer | paged_adamw_8bit |
-| Weight decay | 0.01 |
-| Max sequence length | 1024 |
-| Precision | FP16 (T4 GPU) |
-
-## Evaluation
-
-### Evaluation Approach
-
-Each model's generated answers are compared against 643 human-written reference answers from `dataset_answer.csv`. The evaluation script is in `code/evaluation.ipynb`.
-
-**Metrics used:**
-- **ROUGE-1 / ROUGE-2 / ROUGE-L** (F1): Measures n-gram and subsequence overlap between prediction and reference. ROUGE-1 counts unigram matches, ROUGE-2 counts bigram matches, ROUGE-L uses the longest common subsequence.
-- **BLEU**: Precision-based metric with brevity penalty. Uses smoothing (Method 1) since many answers are short and higher-order n-gram matches can be zero.
-- **BERTScore** (F1): Uses contextual embeddings from `bert-base-multilingual-cased` to measure semantic similarity. More robust to paraphrasing than surface-level metrics.
-
-### Main Results Table
+**The 5.1B QLoRA fine-tuned model (Gemma 4 E2B) beat the 31B zero-shot model (Gemma 4 31B) on all five metrics** — despite being ~6× smaller and trained for only 150 steps on a single 16 GB T4 GPU. On this specialized task, domain fine-tuning on general German-law data outweighed raw model scale.
 
 | Model | ROUGE-1 | ROUGE-2 | ROUGE-L | BLEU | BERTScore F1 |
 |---|---|---|---|---|---|
-| Gemma 4 31B (Inference) | 0.1816 | 0.0571 | 0.1152 | 0.0208 | 0.6891 |
-| **Gemma 4 E2B (QLoRA Fine-tuned)** | **0.2167** | **0.0643** | **0.1572** | **0.0307** | **0.7113** |
+| Gemma 4 31B — zero-shot | 0.1816 | 0.0571 | 0.1152 | 0.0208 | 0.6891 |
+| **Gemma 4 E2B — QLoRA fine-tuned** | **0.2167** | **0.0643** | **0.1572** | **0.0307** | **0.7113** |
 
-### Which Model Performs Best?
+![Model comparison across metrics](figures/results_comparison.png)
 
-**Model 2 (Gemma 4 E2B, QLoRA fine-tuned) outperforms Model 1 (Gemma 4 31B, zero-shot) across all metrics.** This is a notable result because Model 2 is smaller (5.1B vs 31B parameters). The fine-tuning on German law data gives it an edge even though the training data was general German law, not specifically Austrian law.
+The gap is largest on ROUGE-L (+0.042) and BLEU (+0.010), meaning fine-tuning mostly helped the model match the **structure and length** of the expected answers — not just the vocabulary.
 
-The performance gap is most visible in ROUGE-L (+0.042) and BLEU (+0.010), suggesting that fine-tuning helps the model produce answers that are structurally closer to the expected format.
+---
 
-## Error Analysis
+## Overview
 
-### Score Distribution (ROUGE-L)
+Austrian tax law is a narrow, high-precision domain: answers must cite the right statutes (EStG, KStG, BAO, UStG) and specific paragraphs. The question this project asks is practical: **is it better to prompt a very large model, or to cheaply fine-tune a small one?**
 
-| Score Range | Model 1 (31B) | Model 2 (E2B-FT) |
+To answer it, I evaluate two contrasting approaches on the same 643-question benchmark:
+
+- **Approach A — scale, no training:** a 31B instruction-tuned model, prompted zero-shot as a tax-law expert.
+- **Approach B — small, but adapted:** a ~5B model fine-tuned with QLoRA on German-law Q&A data.
+
+Both produce German-language answers under identical evaluation conditions.
+
+---
+
+## Approach
+
+### The two models
+
+**Model 1 — Gemma 4 31B (zero-shot, API inference).**
+Accessed through the Google AI Studio API. The model relies entirely on its pre-training knowledge plus a system prompt instructing it to act as an Austrian tax-law expert and cite relevant paragraphs.
+
+- Model ID: `gemma-4-31b-it` · ~31B parameters
+- Sampling: temperature = 0.1 (low, for factual consistency)
+- Inference: sequential API calls with a 5 s delay (free-tier rate limit) and retry logic for 429/503 errors via `tenacity`
+
+**Model 2 — Gemma 4 E2B (QLoRA fine-tuned).**
+A smaller model fine-tuned on domain data with QLoRA (Quantized Low-Rank Adaptation): the base model is loaded in 4-bit precision and frozen, while only small LoRA adapter layers are trained.
+
+- Model ID: `google/gemma-4-E2B-it` · 2.3B effective (5.1B with embeddings)
+- Trainable parameters: 4,644,864 — just **0.09%** of the model
+- Sampling: temperature = 0.1
+- Inference: local GPU with Unsloth's optimized 2× inference mode
+
+### Fine-tuning data
+
+- **Dataset:** `DomainLLM/german-law-qa` (Hugging Face)
+- **Size:** 14,160 German-law question–answer pairs
+- **Domain:** *general* German law — deliberately broader than Austrian tax law, which turns out to matter (see Error Analysis)
+- **Format:** each pair rendered into Gemma's chat template
+  (`<start_of_turn>user … <end_of_turn> <start_of_turn>model … <end_of_turn>`)
+
+### QLoRA in brief
+
+QLoRA makes it possible to fine-tune on a single Colab T4 (16 GB VRAM):
+
+1. **Quantize** — load the base model in 4-bit (~20 GB → ~5 GB)
+2. **Freeze** — keep all base weights fixed
+3. **Adapt** — inject small trainable LoRA matrices into the attention layers; train only those
+
+### Hyper-parameters
+
+| Parameter | Value | | Parameter | Value |
+|---|---|---|---|---|
+| LoRA rank (r) | 8 | | Effective batch size | 8 |
+| LoRA alpha | 8 | | Training steps | 150 |
+| LoRA dropout | 0 | | Learning rate | 2e-4 |
+| Target modules | q/k/v/o_proj | | LR scheduler | Linear (5 warmup) |
+| Batch size / device | 1 | | Optimizer | paged_adamw_8bit |
+| Grad. accumulation | 8 | | Max seq. length | 1024 |
+| Weight decay | 0.01 | | Precision | FP16 (T4) |
+
+---
+
+## Results & Error Analysis
+
+Metrics: **ROUGE-1/2/L** (n-gram / subsequence overlap), **BLEU** (precision with smoothing, since many answers are short), and **BERTScore F1** (semantic similarity via `bert-base-multilingual-cased` embeddings, robust to paraphrasing). Each model's 643 answers are compared against the gold reference answers.
+
+### Score distribution (ROUGE-L)
+
+| Score range | Gemma 4 31B | Gemma 4 E2B (fine-tuned) |
 |---|---|---|
 | Zero (0.0) | 0 (0.0%) | 16 (2.5%) |
-| Low (0.01 - 0.10) | 290 (45.1%) | 127 (19.8%) |
-| Medium (0.10 - 0.30) | 349 (54.3%) | 464 (72.2%) |
+| Low (0.01–0.10) | 290 (45.1%) | 127 (19.8%) |
+| Medium (0.10–0.30) | 349 (54.3%) | 464 (72.2%) |
 | High (> 0.30) | 4 (0.6%) | 36 (5.6%) |
 
-Model 2 has more answers in the medium and high range, but also has 16 answers with zero overlap (complete misses). Model 1 never scores exactly zero but clusters heavily in the low range.
+The fine-tuned model shifts most answers into the medium/high range, but it also produces 16 complete misses (0.0). The zero-shot model never scores exactly zero yet clusters in the low range — a signature of the failure modes below.
 
-### Main Issues Identified
+### How the models fail
 
-**1. Excessive length (Model 1)**
-Model 1 generates answers that are on average 1,310 characters long, it is about 4.7x the reference length (279 characters). This extreme verbosity dilutes precision: the model includes many correct concepts but keeps them in lengthy explanations that don't match the concise reference format.
+1. **Excessive length (Model 1).** The zero-shot model averages **1,310 characters** per answer — ~4.7× the reference length (279). It often includes the right concepts but buries them in verbose explanations, which tanks precision.
+2. **Hallucinated legal references (both).** Both cite wrong or irrelevant statutes. The fine-tuned model wrongly invokes the civil code (BGB) 74 times — likely because its training data covered *general* German law, blurring the line between civil and tax domains.
 
-**2. Hallucinated legal references (both models)**
-Both models cite incorrect or irrelevant legal sources:
+   | Legal source | Model 1 | Model 2 | Relevant for |
+   |---|---|---|---|
+   | KStG (corporate income tax) | 118 | 287 | Corporate-tax questions |
+   | EStG (income tax) | 445 | 177 | Income-tax questions |
+   | BGB (civil code) | 10 | 74 | *Not* relevant to tax law |
 
-| Reference | Model 1 | Model 2 | Expected |
-|---|---|---|---|
-| KStG (tax law) | 118 | 287 | Correct for tax questions |
-| EStG (income tax) | 445 | 177 | Correct for income tax questions |
-| BGB (civil code) | 10 | 74 | Wrong — not relevant for tax law |
+3. **Repetitive generation (Model 2).** ~3.9% of fine-tuned answers loop and repeat a phrase — a known issue for small models trained for few steps. Model 1 shows none, helped by capacity and API-side safeguards.
+4. **Wrong paragraph numbers (both).** Even with the right concept, both frequently cite the wrong paragraph — e.g., Model 2 defaults to "§ 7 Abs. 1 KStG" almost regardless of the question.
 
-Model 2 hallucinates BGB (Buergerliches Gesetzbuch) references 74 times — likely because the fine-tuning dataset (`DomainLLM/german-law-qa`) covers general German law including civil law, causing confusion between legal domains.
+### Two different failure profiles
 
-**3. Repetitive generation (Model 2)**
-About 3.9% of Model 2's answers contain repeated sentences (the model gets stuck in a loop and repeats the same phrase). This is a known issue with smaller models that haven't been trained long enough. Model 1 shows no repetition, likely due to its larger capacity and the API's generation safeguards.
+- **Model 1 (31B, zero-shot):** *correct in substance, but too long.* Right concepts, wrong format.
+- **Model 2 (5B, fine-tuned):** *concise and well-formatted, but fails harder when it fails* — wrong legal code, repetition, or zero-overlap on topics outside its fine-tuning distribution.
 
-**4. Wrong paragraph numbers (both models)**
-Even when models identify the correct legal concept, they frequently cite wrong paragraph numbers. For example, Model 2 cites "§ 7 Abs. 1 KStG" for almost every question regardless of the actual relevant provision.
+---
 
-### Are Mistakes the Same Across Models?
+## Key Takeaways
 
-No — each model has a distinct failure profile:
+- **Targeted fine-tuning can beat brute-force scale** on a narrow domain — and do it on free hardware.
+- **Data domain matters as much as data volume:** training on *general* German law helped format and fluency but introduced civil-law hallucinations on tax questions.
+- **Aggregate metrics hide the interesting part.** The error analysis — length, hallucinated statutes, repetition, wrong paragraphs — says far more about production-readiness than a single ROUGE number.
+- **Neither model is deployable as-is** for real tax advice; both would need retrieval grounding and citation verification.
 
-- **Model 1** tends to be **correct in substance but too long**. It identifies the right legal concepts but wraps them in lengthy explanations with excessive EStG references, resulting in low precision scores.
-- **Model 2** tends to be **concise but sometimes factually wrong**. It matches the expected answer length well, but when it fails, it fails harder — citing completely wrong legal codes (BGB instead of KStG), repeating itself, or giving zero-overlap answers on topics outside its fine-tuning distribution.
+---
 
-## File Structure
+## Repository Structure
 
 ```
-Daniil_Rabotnev/
-├── README.md                              # This project report
-├── code/
-│   ├── model1_inference.ipynb             # Model 1: Gemma 4 31B API inference
-│   ├── model2_finetune.ipynb              # Model 2: Gemma 4 E2B QLoRA fine-tuning + inference
-│   └── evaluation.ipynb                   # Evaluation script (ROUGE, BLEU, BERTScore)
-└── results/
-    ├── model1_api_inference_results.csv   # Model 1 predictions (643 answers)
-    ├── model2_finetune_results.csv        # Model 2 predictions (643 answers)
-    └── dataset_answers.csv                   # Gold-standard reference answers (645 entries)
+austrian-tax-law-llm-finetuning/
+├── code/                    # Notebooks: API inference (Model 1) + QLoRA fine-tuning (Model 2)
+├── evaluation/              # Evaluation notebook (ROUGE / BLEU / BERTScore) + analysis
+├── results/                 # Model predictions — 643 answers each (CSV)
+├── figures/                 # Charts used in this README
+├── dataset_clean.csv        # 643 Austrian tax-law questions
+├── sample_model_output.csv  # Example generations
+├── README.md
+└── .gitignore
 ```
+
+---
+
+## How to Reproduce
+
+```bash
+# 1. Install dependencies
+pip install unsloth transformers peft trl bitsandbytes datasets \
+            rouge-score sacrebleu bert-score google-generativeai pandas tenacity
+
+# 2. Fine-tune Model 2 (Colab T4 recommended)  ->  code/
+# 3. Run Model 1 inference (add your Google AI Studio API key)  ->  code/
+# 4. Reproduce all metric tables  ->  evaluation/
+```
+
+> Adding a `requirements.txt` with pinned versions makes this one command; each notebook notes its exact run order.
+
+---
+
+## Tech Stack
+
+Python · PyTorch · Unsloth · Hugging Face (Transformers · PEFT · TRL) · bitsandbytes (4-bit) · Google AI Studio API · ROUGE / BLEU / BERTScore
+
+---
+
+## Data & Acknowledgments
+
+- **Fine-tuning data:** `DomainLLM/german-law-qa` (Hugging Face)
+- **Evaluation set:** 643 Austrian tax-law question–answer pairs
+- Built for the WU Vienna course *Applications of Data Science: Large Language Models*
+- Code released under the **MIT License**. External datasets and model weights remain under their own licenses.
