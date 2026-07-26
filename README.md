@@ -1,6 +1,7 @@
-# Fine-Tuning vs. Zero-Shot LLMs for Austrian Tax Law
+# Evaluating LLMs on Austrian Tax Law: Fine-Tuned 5B vs. Zero-Shot 31B
 
-*Can a small fine-tuned model beat a much larger zero-shot one on domain-specific legal QA?*
+*A 643-question German-language benchmark with automatic metrics and a manual failure-mode analysis. 
+Can a small fine-tuned model beat a much larger zero-shot one on domain-specific legal QA?*
 
 This project compares two ways of answering **643 Austrian tax-law questions** in German: a large general-purpose model used **zero-shot** through an API, and a small model **fine-tuned with QLoRA** on a single free Colab GPU. Both are scored against human-written reference answers using ROUGE, BLEU, and BERTScore, followed by a detailed error analysis of *how* each model fails.
 
